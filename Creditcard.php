@@ -3,6 +3,7 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 
 class Creditcard extends CI_Controller{
 
+   
     public function paytr($order){
 
         ##session kontrolleri
@@ -19,12 +20,12 @@ class Creditcard extends CI_Controller{
         if($orderquery){
 
             ##default POS firması ## 
-            $setting = $this->Common_model->get(['id'=>1],'ayarlar');
-            $defaultpos = $setting->site_gecerli_pos;
-            $pos        = $this->Common_model->get(['posid'=>$defaultpos],'posfirmalari');
+            $setting           = $this->Common_model->get(['id'=>1],'ayarlar');
+            $defaultpos        = $setting->site_gecerli_pos;
+            $pos               = $this->Common_model->get(['posid'=>$defaultpos],'posfirmalari');
 
             ##ürün bilgileri ## 
-            $product    = $this->Common_model->get(['urun_kodu'=>$orderquery->sipurun],'urunler');
+            $product           = $this->Common_model->get(['urun_kodu'=>$orderquery->sipurun],'urunler');
 
             ##PAYTR için veriler## 
             $merchant_id 	   = $pos->posmerchantid;
@@ -229,8 +230,258 @@ class Creditcard extends CI_Controller{
         echo "OK";
         exit;
 
+    } 
+
+    public function iyzico($order){
+
+        ##session kontrolleri
+        $this->load->helper('usersession');
+        userchecksession();
+        ##session kontrolleri sonu
+
+        if(!$order){
+            redirect(base_url());
+        }
+
+        $query = $this->Common_model->get(['sipno'=>$order,'sipdurum'=>'beklemede'],'siparisler');
+        if($query){  
+
+            $setting     = $this->Common_model->get(['id'=>1],'ayarlar');
+            $defaultpos  = $setting->site_gecerli_pos;
+            $pos         = $this->Common_model->get(['posid'=>$defaultpos],'posfirmalari');
+
+            ##ürün bilgileri##
+            $productinfo = $this->Common_model->get(['urun_kodu'=>$query->sipurun],'urunler');
+            ##ürün bilgileri##
+
+            ##iyzico bağlantısı## 
+            require_once('iyzico/IyzipayBootstrap.php');
+            IyzipayBootstrap::init();
+            $options = new \Iyzipay\Options();
+            $options->setApiKey("$pos->posmerchantkey");
+            $options->setSecretKey("$pos->posmerchantsalt");
+            $options->setBaseUrl("https://api.iyzipay.com/");
+            ##iyzico bağlantısı sonu
+
+            $totalprice = round($query->siptutar);
+            $request    = new \Iyzipay\Request\CreateCheckoutFormInitializeRequest();
+            $request->setLocale(\Iyzipay\Model\Locale::TR);
+            $request->setConversationId($query->sipno);
+            $request->setPrice($totalprice);
+            $request->setPaidPrice($totalprice);
+            $request->setCurrency(\Iyzipay\Model\Currency::TL);
+            $request->setBasketId($query->sipno);
+            $request->setPaymentGroup(\Iyzipay\Model\PaymentGroup::PRODUCT);
+            $request->setCallbackUrl(base_url('creditcard/iyzicoresult/'.$query->sipno));
+            //$request->setEnabledInstallments(array(2, 3, 6, 9));
+
+
+            ##alıcı bilgilerini giriyoruz##
+            $buyer = new \Iyzipay\Model\Buyer();
+            $buyer->setId($query->sipno);
+            $buyer->setName(ss('username'));
+            $buyer->setSurname(ss('username'));
+            $buyer->setGsmNumber(ss('userphone'));
+            $buyer->setEmail(ss('usermail'));
+            $buyer->setIdentityNumber($query->sipno);
+            $buyer->setLastLoginDate($query->siptarih);
+            $buyer->setRegistrationDate($query->siptarih);
+            $buyer->setRegistrationAddress('İstanbul/Kadıköy');
+            $buyer->setIp($this->input->ip_address());
+            $buyer->setCity('İstanbul');
+            $buyer->setCountry("Turkey");
+            $buyer->setZipCode("16400");
+            $request->setBuyer($buyer);
+            ##alıcı bilgilerini giriyoruz##
+
+            ##fatura ve kargo adresi##
+            $shippingAddress = new \Iyzipay\Model\Address();
+            $shippingAddress->setContactName(ss('username'));
+            $shippingAddress->setCity('İstanbul');
+            $shippingAddress->setCountry("Turkey");
+            $shippingAddress->setAddress('İstanbul');
+            $shippingAddress->setZipCode("34400");
+            $request->setShippingAddress($shippingAddress);
+
+            $billingAddress = new \Iyzipay\Model\Address();
+            $billingAddress->setContactName(ss('username'));
+            $billingAddress->setCity('İstanbul');
+            $billingAddress->setCountry("Turkey");
+            $billingAddress->setAddress('İstanbul');
+            $billingAddress->setZipCode("34742");
+            $request->setBillingAddress($billingAddress);
+            ##fatura ve kargo adresi##
+
+            ##ürün bilgileri ## 
+            $basketItems     = array();
+            $firstBasketItem = new \Iyzipay\Model\BasketItem();
+            $firstBasketItem->setId($productinfo->urun_kodu);
+            $firstBasketItem->setName("$productinfo->urun_adi");
+            $firstBasketItem->setCategory1("Dijital ürün");
+            $firstBasketItem->setCategory2("Dijital ürün");
+            $firstBasketItem->setItemType(\Iyzipay\Model\BasketItemType::PHYSICAL);
+            $firstBasketItem->setPrice($productinfo->urun_fiyat);   
+            $basketItems[] = $firstBasketItem;
+            $request->setBasketItems($basketItems);
+            ##ürün bilgileri sonu ## 
+
+            ##ödeme formu## 
+            $checkoutFormInitialize = \Iyzipay\Model\CheckoutFormInitialize::create($request, $options);
+            $viewData = array(
+                "iyzicoform"   => $checkoutFormInitialize->getCheckoutFormContent(),
+                "iyzicoerror"  => $checkoutFormInitialize->getErrorMessage(),
+                "setting"      => $setting,
+                'social'       => $this->Common_model->getAll(['sosdurum'=>1],'sosyalmedyalar'),
+                'pages'        => $this->Common_model->getAll(['sayfadurum'=>1],'sayfalar'),
+                'popular'      => $this->Common_model->getLimitAll(['urun_durum'=>1],8,0,'urunler','urun_goruntulenme','DESC'),
+                'popblog'      => $this->Common_model->getLimitAll(['blogdurum'=>1],4,0,'blog','bloggoruntulenme','DESC'),
+            );
+
+            $this->load->view('default/iyzico_view',$viewData);
+
+
+        }else{
+            redirect(base_url());
+        }
+
+
     }
-    
+
+    public function iyzicoresult($order){
+
+        if(!$order){
+            redirect(base_url());
+        }
+
+        ##siparişe ait veriler ## 
+        $orderquery  = $this->Common_model->get(['sipno'=>$order],'siparisler');
+        $userquery   = $this->Common_model->get(['uye_kodu'=>$orderquery->sipuye],'uyeler');
+        $pquery      = $this->Common_model->get(['urun_kodu'=>$orderquery->sipurun],'urunler');
+        ##siparişe ait veriler ## 
+        
+
+        ##default post## 
+        $setting     = $this->Common_model->get(['id'=>1],'ayarlar');
+        $defaultpos  = $setting->site_gecerli_pos;
+        $pos         = $this->Common_model->get(['posid'=>$defaultpos],'posfirmalari');
+        ##default post## 
+
+        ##iyzico bağlantısı## 
+        require_once('iyzico/IyzipayBootstrap.php');
+        IyzipayBootstrap::init();
+        $options = new \Iyzipay\Options();
+        $options->setApiKey("$pos->posmerchantkey");
+        $options->setSecretKey("$pos->posmerchantsalt");
+        $options->setBaseUrl("https://api.iyzipay.com/");
+        ##iyzico bağlantısı sonu
+
+        ##iyzico sonucları##
+        $token        = $this->input->post('token',true);
+        $request      = new \Iyzipay\Request\RetrieveCheckoutFormRequest();
+        $request->setLocale(\Iyzipay\Model\Locale::TR);
+        $request->setConversationId($order);
+        $request->setToken($token);
+        $checkoutForm = \Iyzipay\Model\CheckoutForm::retrieve($request, $options);
+        $orderno      = $checkoutForm->getbasketId();
+        $orderstatus  = $checkoutForm->getPaymentStatus();
+        ##iyzico sonucları##
+
+        if($orderstatus == "SUCCESS"){
+
+            $this->Common_model->update(['sipno'=>$orderno],
+            ['sipdurum'=>'hazirlaniyor'],'siparisler');
+
+            ##mail gönderim işlemi ## 
+            if($setting->mailbildirim == 1){
+
+                $this->load->helper('class.smtp');
+                $this->load->helper('class.phpmailer');
+
+                $defaultsmtp       = $setting->site_gecerli_smtp;
+                $smtpinfo          = $this->Common_model->get(['smtp_id'=>$defaultsmtp,'smtp_durum'=>1],'smtpbilgileri');
+
+                $mail              = new PHPMailer();
+                $mail->Host        = $smtpinfo->smtp_host;
+                $mail->Port        = $smtpinfo->smtp_port;
+                $mail->SMTPSecure  = $smtpinfo->smtp_sec;
+                $mail->Username    = $smtpinfo->smtp_mail;
+                $mail->Password    = $smtpinfo->smtp_sifre;
+                $mail->IsSMTP();
+                $mail->SMTPAuth    = true;
+                $mail->SetFrom($smtpinfo->smtp_mail,$setting->site_baslik);
+                $mail->AddAddress($userquery->uye_mail,$setting->site_baslik);
+                $mail->CharSet  = 'UTF-8';
+                $mail->Subject  = $orderno.' Nolu Siparişiniz Onaylandı - '.$setting->site_baslik;
+                    
+                $content = '<h3>Sipariş Onayı</h3>
+                <p>'.$orderno.' sipariş numarası ile yeni siparişiniz onaylandı, En kısa sürede teslimatı sağlanacaktır ...</p>
+                <hr />
+                <h5>Sipariş Detayı</h5>
+                <p><b>Sipariş Tutarı:</b>'.$pquery->urun_fiyat.' TL</p>
+                <p><b>Sipariş Numarası:</b>'.$orderno.'</p>
+                <p><b>Ürün Adı:</b>'.$pquery->urun_adi.'</p>
+                <hr />
+                <p>Bizi tercih ettiğiniz için teşekkür ederiz...</p>
+                ';
+                $mail->MsgHTML($content);
+                $mail->Send();
+            }
+            ##mail bildirim sonu
+
+            $viewData = array(
+                'setting'      => $setting,
+                'social'       => $this->Common_model->getAll(['sosdurum'=>1],'sosyalmedyalar'),
+                'pages'        => $this->Common_model->getAll(['sayfadurum'=>1],'sayfalar'),
+                'popular'      => $this->Common_model->getLimitAll(['urun_durum'=>1],8,0,'urunler','urun_goruntulenme','DESC'),
+                'popblog'      => $this->Common_model->getLimitAll(['blogdurum'=>1],4,0,'blog','bloggoruntulenme','DESC'),
+                'banks'        => $this->Common_model->getAll(['bankadurum'=>1],'bankalar')
+            );
+
+            $this->load->view('default/success_view',$viewData);
+
+        }else if($orderstatus == "FAILURE"){
+
+            $this->Common_model->update(['sipno'=>$orderno],
+            ['sipdurum'=>'iptal',
+            'odemeaciklama' => 'kart limit yetersiz ya da hatalı veri'],
+            'siparisler');
+
+            $viewData = array(
+                'setting'      => $setting,
+                'social'       => $this->Common_model->getAll(['sosdurum'=>1],'sosyalmedyalar'),
+                'pages'        => $this->Common_model->getAll(['sayfadurum'=>1],'sayfalar'),
+                'popular'      => $this->Common_model->getLimitAll(['urun_durum'=>1],8,0,'urunler','urun_goruntulenme','DESC'),
+                'popblog'      => $this->Common_model->getLimitAll(['blogdurum'=>1],4,0,'blog','bloggoruntulenme','DESC'),
+                'banks'        => $this->Common_model->getAll(['bankadurum'=>1],'bankalar')
+            );
+
+            $this->load->view('default/error_view',$viewData);
+
+
+        }else{
+
+            $this->Common_model->update(['sipno'=>$orderno],
+            ['sipdurum'=>'iptal',
+            'odemeaciklama' => 'kart limit yetersiz ya da hatalı veri'],
+            'siparisler');
+
+            $viewData = array(
+                'setting'      => $setting,
+                'social'       => $this->Common_model->getAll(['sosdurum'=>1],'sosyalmedyalar'),
+                'pages'        => $this->Common_model->getAll(['sayfadurum'=>1],'sayfalar'),
+                'popular'      => $this->Common_model->getLimitAll(['urun_durum'=>1],8,0,'urunler','urun_goruntulenme','DESC'),
+                'popblog'      => $this->Common_model->getLimitAll(['blogdurum'=>1],4,0,'blog','bloggoruntulenme','DESC'),
+                'banks'        => $this->Common_model->getAll(['bankadurum'=>1],'bankalar')
+            );
+
+            $this->load->view('default/error_view',$viewData);
+
+
+        }
+
+        
+    }
+     
 
 }
 
