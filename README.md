@@ -1,4 +1,4 @@
-<h1 align="center">Hi 👋, I'm Yavuz Selim</h1>
+<h1 align="center">Selam 👋 Ben, Yavuz Selim</h1>
 <h3 align="center">Software Developer</h3>
 
 - 🔭 Üzerinde çalıştığımız proje [Dijital Ürün Satış Sitesi](https://yavuz-selim.com)
